@@ -1,17 +1,201 @@
 <ion-header [translucent]="true">
   <ion-toolbar>
-    <ion-title>
-      Tab 1
-    </ion-title>
+    <ion-title>Speech to Text - Conversation</ion-title>
   </ion-toolbar>
 </ion-header>
 
-<ion-content [fullscreen]="true">
+<ion-content [fullscreen]="true" class="ion-padding">
   <ion-header collapse="condense">
     <ion-toolbar>
-      <ion-title size="large">Tab 1</ion-title>
+      <ion-title size="large">Speech to Text - Conversation</ion-title>
     </ion-toolbar>
   </ion-header>
 
-  <app-explore-container name="Tab 1 page"></app-explore-container>
+  <!-- ✅ Chọn ngôn ngữ -->
+  <ion-card>
+    <ion-card-content>
+      <ion-item>
+        <ion-label>Ngôn ngữ:</ion-label>
+        <ion-select [(ngModel)]="selectedLanguage" [disabled]="isRecording()">
+          <ion-select-option *ngFor="let lang of availableLanguages" [value]="lang">
+            {{ lang }}
+          </ion-select-option>
+        </ion-select>
+      </ion-item>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- ✅ Start/Stop Buttons -->
+  <div class="ion-text-center ion-margin-top" style="display: flex; justify-content: center; gap: 24px;">
+    <ion-button (click)="startRecording()" color="primary" size="large" [disabled]="isRecording()" shape="round">
+      <ion-icon name="mic-outline" slot="start"></ion-icon>
+      Start
+    </ion-button>
+    <ion-button (click)="stopRecording()" color="danger" size="large" [disabled]="!isRecording()" shape="round">
+      <ion-icon name="stop-outline" slot="start"></ion-icon>
+      Stop
+    </ion-button>
+  </div>
+
+  <!-- ✅ Current Real-time Text -->
+  <ion-card class="ion-margin-top">
+    <ion-card-header>
+      <ion-card-title>
+        {{ isRecording() ? '🎤 Đang ghi âm...' : 'Text hiện tại' }}
+      </ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <div class="result-text" [class.recording]="isRecording()">
+        {{ currentText() || (isRecording() ? '🎤 Đang lắng nghe...' : 'Chưa có kết quả') }}
+      </div>
+      <p *ngIf="isRecording()" style="font-size: 12px; color: #999; margin-top: 8px; text-align: center;">
+        ⏱️ Im lặng > {{ silenceSeconds }} giây sẽ ngắt câu
+      </p>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- ✅ Danh sách câu nhận diện -->
+  <ion-card *ngIf="sentences().length > 0" class="ion-margin-top">
+    <ion-card-header>
+      <ion-card-title style="display: flex; justify-content: space-between; align-items: center;">
+        <span>📝 Danh sách câu ({{ sentences().length }})</span>
+        <ion-button size="small" (click)="copyAllSentences()" fill="outline" color="success">
+          <ion-icon name="copy-outline" slot="start"></ion-icon>
+          Copy All
+        </ion-button>
+      </ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <ion-list>
+        <ion-item *ngFor="let sentence of sentences(); let i = index" class="sentence-item">
+          <ion-label class="ion-text-wrap">
+            <p class="sentence-number" style="font-weight: bold; margin: 0;">
+              Câu {{ i + 1 }}
+            </p>
+            <p class="sentence-text" style="margin: 4px 0 0 0; font-size: 16px;">
+              {{ sentence.text }}
+            </p>
+            <p class="sentence-meta" style="margin: 4px 0 0 0; font-size: 12px; color: #999;">
+              {{ sentence.timestamp | date:'HH:mm:ss' }}
+            </p>
+          </ion-label>
+
+          <!-- Copy Sentence Button -->
+          <ion-button slot="end" fill="clear" size="small" (click)="copySentence(sentence)" color="success">
+            <ion-icon name="copy-outline"></ion-icon>
+          </ion-button>
+
+          <!-- Delete Sentence Button -->
+          <ion-button slot="end" fill="clear" size="small" color="danger" (click)="removeSentence(sentence.id)">
+            <ion-icon name="trash-outline"></ion-icon>
+          </ion-button>
+        </ion-item>
+      </ion-list>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- ✅ Empty State khi ghi xong nhưng chưa có câu nào -->
+  <ion-card *ngIf="!isRecording() && sentences().length === 0" class="ion-margin-top">
+    <ion-card-content style="text-align: center; padding: 40px 20px;">
+      <p style="font-size: 48px; margin: 0;">🎙️</p>
+      <p style="color: #999; margin: 16px 0 0 0;">
+        Bấm "Start" để bắt đầu ghi âm cuộc hội thoại
+      </p>
+    </ion-card-content>
+  </ion-card>
+
+  <!-- ✅ Lịch sử đoạn hội thoại -->
+  <ion-card *ngIf="history().length > 0" class="ion-margin-top">
+    <ion-card-header>
+      <ion-card-title style="display: flex; justify-content: space-between; align-items: center;">
+        <span>⏱️ Lịch sử ({{ history().length }})</span>
+        <ion-button (click)="clearHistory()" color="danger" size="small" fill="clear">
+          Xóa tất cả
+        </ion-button>
+      </ion-card-title>
+    </ion-card-header>
+    <ion-card-content>
+      <ion-list>
+        <ion-item *ngFor="let item of history(); let i = index" class="history-item">
+          <ion-label class="ion-text-wrap">
+            <p class="history-text" style="margin: 0; color: #333;">
+              {{ item.text }}
+            </p>
+            <p class="history-meta" style="margin: 4px 0 0 0; color: #999; font-size: 12px;">
+              <small>{{ item.time | date:'dd/MM/yyyy HH:mm:ss' }} • {{ item.language }}</small>
+            </p>
+          </ion-label>
+
+          <!-- Copy History Button -->
+          <ion-button slot="end" fill="clear" size="small" color="success" (click)="copyToClipboard(item.text)">
+            <ion-icon name="copy-outline"></ion-icon>
+          </ion-button>
+
+          <!-- Delete History Button -->
+          <ion-button slot="end" fill="clear" size="small" color="danger" (click)="removeFromHistory(i)">
+            <ion-icon name="trash-outline"></ion-icon>
+          </ion-button>
+        </ion-item>
+      </ion-list>
+    </ion-card-content>
+  </ion-card>
+
 </ion-content>
+
+<style>
+  .result-text {
+    padding: 16px;
+    background-color: #f4f4f4;
+    border-radius: 8px;
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  .result-text.recording {
+    background-color: #fff3e0;
+    color: #e65100;
+    font-style: italic;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.7;
+    }
+  }
+
+  .sentence-item {
+    --padding-start: 0;
+    --inner-padding-end: 0;
+    margin-bottom: 8px;
+    border-left: 4px solid #3880ff;
+    padding-left: 12px;
+  }
+
+  .history-item {
+    --padding-start: 0;
+    --inner-padding-end: 0;
+  }
+
+  .history-text {
+    margin: 0 0 4px 0;
+    color: #333;
+    white-space: pre-wrap;
+  }
+
+  .history-meta {
+    margin: 0;
+    color: #999;
+  }
+</style>
