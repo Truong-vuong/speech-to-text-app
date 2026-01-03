@@ -40,8 +40,17 @@
   <!-- ✅ Current Real-time Text -->
   <ion-card class="ion-margin-top">
     <ion-card-header>
-      <ion-card-title>
-        {{ isRecording() ? '🎤 Đang ghi âm...' : 'Text hiện tại' }}
+      <ion-card-title style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+        <span>{{ isRecording() ? '🎤 Đang ghi âm...' : 'Text hiện tại' }}</span>
+        <span style="display: flex; gap: 6px;">
+          <ion-button fill="clear" color="tertiary" size="small" (click)="normalizeCurrentText()"
+            [disabled]="isRecording()">
+            <ion-icon slot="icon-only" name="sparkles-outline"></ion-icon>
+          </ion-button>
+          <ion-button fill="clear" color="success" size="small" (click)="speakCurrentText()" [disabled]="isRecording()">
+            <ion-icon slot="icon-only" name="volume-high-outline"></ion-icon>
+          </ion-button>
+        </span>
       </ion-card-title>
     </ion-card-header>
     <ion-card-content>
@@ -125,6 +134,18 @@
               <small>{{ item.time | date:'dd/MM/yyyy HH:mm:ss' }} • {{ item.language }}</small>
             </p>
           </ion-label>
+
+          <!-- Normalize with AI -->
+          <ion-button slot="end" fill="clear" size="small" color="tertiary" (click)="normalizeHistoryItem(i)"
+            [disabled]="isRecording()">
+            <ion-icon name="sparkles-outline"></ion-icon>
+          </ion-button>
+
+          <!-- Speak -->
+          <ion-button slot="end" fill="clear" size="small" color="success" (click)="speakHistoryItem(i)"
+            [disabled]="isRecording()">
+            <ion-icon name="volume-high-outline"></ion-icon>
+          </ion-button>
 
           <!-- Copy History Button -->
           <ion-button slot="end" fill="clear" size="small" color="success" (click)="copyToClipboard(item.text)">

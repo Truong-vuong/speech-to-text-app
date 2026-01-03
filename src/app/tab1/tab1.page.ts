@@ -1,13 +1,14 @@
 import { Component, signal, NgZone } from '@angular/core';
 import { IonHeader, IonToolbar, IonTitle, IonContent, IonSelect, IonSelectOption, IonButton, IonCard, IonCardContent, IonCardHeader, IonCardTitle, IonItem, IonLabel, IonList, IonIcon } from '@ionic/angular/standalone';
-import { SpeechRecognition } from "@capgo/capacitor-speech-recognition";
 import { Clipboard } from '@capacitor/clipboard';
-import type { PluginListenerHandle } from '@capacitor/core';
 import { Platform, ToastController } from '@ionic/angular/standalone';
+import { SpeechRecognition } from '@capgo/capacitor-speech-recognition';
+import { SpeechSynthesis } from '@capgo/capacitor-speech-synthesis';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { addIcons } from 'ionicons';
-import { copyOutline, trashOutline, micOutline, stopOutline } from 'ionicons/icons';
+import { copyOutline, trashOutline, micOutline, stopOutline, sparklesOutline, volumeHighOutline } from 'ionicons/icons';
+import { GeminiService } from '../services/gemini.service';
 
 interface Sentence {
   id: string;
@@ -22,33 +23,31 @@ interface Sentence {
   imports: [IonHeader, IonToolbar, IonTitle, IonContent, IonSelect, IonSelectOption, IonButton, IonCard, IonCardContent, IonCardHeader, IonCardTitle, IonItem, IonLabel, IonList, IonIcon, CommonModule, FormsModule],
 })
 export class Tab1Page {
-  public speechRecognition = SpeechRecognition;
-
   // ✅ States
   public isRecording = signal(false);
   public currentText = signal(''); // Text hiện tại đang nói (real-time)
   public sentences = signal<Sentence[]>([]); // ✅ Danh sách câu đã ngắt
   public history = signal<{ text: string, time: Date, language: string }[]>([]);
 
+  // ✅ Capgo Speech Recognition config
   public availableLanguages: string[] = [];
-  private defaultLanguage: string[] = ['vi-VN', 'en-US', 'ja-JP', 'ko-KR', 'zh-CN'];
+  private defaultLanguages: string[] = [
+    'vi-VN', 'en-US', 'en-GB', 'ja-JP', 'ko-KR', 'zh-CN', 'zh-TW',
+    'fr-FR', 'de-DE', 'es-ES', 'es-MX', 'th-TH', 'id-ID', 'hi-IN', 'ru-RU'
+  ];
   public selectedLanguage = 'vi-VN';
   public hasPermission = false;
 
-  // ✅ Listeners
-  private partialListener?: PluginListenerHandle;
-  private listeningStateListener?: PluginListenerHandle;
+  // ✅ Tùy chọn xử lý AI & TTS
+  public enabledAi = true;
+  public enabledVoices = true;
 
   // ✅ Biến quản lý ngắt câu
-  private lastPartialResultTime = 0; // Thời điểm nhận kết quả cuối cùng
+  private lastPartialResultTime = 0;
   private silenceThreshold = 2000; // 2 giây im lặng = ngắt câu
   private silenceCheckInterval: any = null;
-  private currentSentenceText = ''; // Text của câu hiện tại
-  private lastFullText = ''; // Chuỗi full từ speech recognition lần gần nhất
-  private savedLength = 0;   // Độ dài đã cắt ra thành câu
-  private isNativeListening = false; // Theo dõi trạng thái native để tự khởi động lại
-  private userRequestedStop = false; // Phân biệt user bấm Stop hay native tự dừng
-  private lastStopReason: 'user' | 'native-stop' | 'error' | 'unknown' = 'unknown';
+  private currentSentenceText = '';
+  private userRequestedStop = false;
 
   get silenceSeconds() {
     return this.silenceThreshold / 1000;
@@ -57,9 +56,10 @@ export class Tab1Page {
   constructor(
     private platform: Platform,
     private ngZone: NgZone,
-    private toastController: ToastController
+    private toastController: ToastController,
+    private geminiService: GeminiService
   ) {
-    addIcons({ copyOutline, trashOutline, micOutline, stopOutline });
+    addIcons({ copyOutline, trashOutline, micOutline, stopOutline, sparklesOutline, volumeHighOutline });
     this.platform.ready().then(() => {
       this.initialize();
       this.loadHistory();
@@ -67,139 +67,96 @@ export class Tab1Page {
   }
 
   async initialize() {
-    if (this.platform.is('capacitor')) {
-      await this.checkAndRequestPermission();
-      if (this.hasPermission) {
-        await this.loadAvailableLanguages();
-        this.setupListeners();
-      }
-    } else {
-      console.warn('Speech recognition chỉ hỗ trợ trên thiết bị Capacitor (Android/iOS).');
-      this.currentText.set('Tính năng chỉ chạy trên Android/iOS (Capacitor).');
+    // ✅ Kiểm tra và yêu cầu quyền microphone
+    await this.checkAndRequestPermission();
+
+    if (this.hasPermission) {
+      await this.loadAvailableLanguages();
+      this.setupSpeechListeners();
     }
   }
 
   async checkAndRequestPermission() {
     try {
-      const permission = await this.speechRecognition.checkPermissions();
-      console.log('✅ Permission status:', permission);
+      const { available } = await SpeechRecognition.available();
+      if (!available) {
+        console.warn('Speech Recognition không khả dụng trên thiết bị này');
+        this.hasPermission = false;
+        return;
+      }
 
-      if (permission.speechRecognition === 'prompt' || permission.speechRecognition === 'denied') {
-        const requestResult = await this.speechRecognition.requestPermissions();
-        console.log('✅ Request result:', requestResult);
-        this.hasPermission = requestResult.speechRecognition === 'granted';
-      } else if (permission.speechRecognition === 'granted') {
+      const permStatus = await SpeechRecognition.checkPermissions();
+      if (permStatus.speechRecognition !== 'granted') {
+        const result = await SpeechRecognition.requestPermissions();
+        this.hasPermission = result.speechRecognition === 'granted';
+      } else {
         this.hasPermission = true;
       }
 
-      if (!this.hasPermission) {
-        console.error('❌ Không có quyền truy cập microphone');
-      }
+      console.log('✅ Permission granted:', this.hasPermission);
     } catch (error) {
-      console.error('❌ Lỗi khi kiểm tra quyền:', error);
+      console.error('❌ Lỗi kiểm tra permission:', error);
+      this.hasPermission = false;
     }
   }
 
   async loadAvailableLanguages() {
     try {
-      const languages = await this.speechRecognition.getSupportedLanguages();
-      this.availableLanguages = languages.languages || this.defaultLanguage;
+      const { languages } = await SpeechRecognition.getSupportedLanguages();
+      this.availableLanguages = languages.length > 0 ? languages : this.defaultLanguages;
       console.log('✅ Available languages:', this.availableLanguages);
     } catch (error) {
-      console.error('❌ Lỗi khi lấy danh sách ngôn ngữ:', error);
-      this.availableLanguages = this.defaultLanguage;
+      console.warn('Không lấy được danh sách ngôn ngữ, dùng mặc định');
+      this.availableLanguages = this.defaultLanguages;
     }
   }
 
   /**
-   * ✅ Setup listener cho partial results (real-time)
+   * ✅ Setup listeners cho Speech Recognition
    */
-  async setupListeners() {
-    await this.partialListener?.remove();
-    await this.listeningStateListener?.remove();
-    console.log('🔧 Setting up listeners...');
+  private setupSpeechListeners() {
+    // ✅ Listener nhận kết quả partial
+    SpeechRecognition.addListener('partialResults', (data: any) => {
+      this.lastPartialResultTime = Date.now();
 
-    this.partialListener = await this.speechRecognition.addListener('partialResults', (data: any) => {
-      if (data.matches && data.matches.length > 0) {
-        const bestMatch = data.matches[0]; // Lấy kết quả tốt nhất (full chuỗi)
-
-        // Nếu native reset và trả chuỗi ngắn hơn phần đã lưu, xem như phiên mới
-        if (bestMatch.length < this.savedLength) {
-          this.savedLength = 0;
-          this.lastFullText = '';
+      this.ngZone.run(() => {
+        if (data.matches && data.matches.length > 0) {
+          const text = data.matches[0];
+          this.currentSentenceText = text;
+          this.currentText.set(text || '🎤 Đang lắng nghe...');
         }
-
-        // Tính phần mới kể từ lần đã lưu trước đó
-        const newPart = bestMatch.substring(this.savedLength).trim();
-
-        this.ngZone.run(() => {
-          // Hiển thị phần đang nói của câu hiện tại (delta)
-          this.currentText.set(newPart || '');
-          this.currentSentenceText = newPart;
-        });
-
-        // Lưu lại full text lần gần nhất để cập nhật savedLength khi chốt câu
-        this.lastFullText = bestMatch;
-
-        // ✅ Cập nhật thời gian nhận kết quả cuối cùng
-        this.lastPartialResultTime = Date.now();
-
-        console.log(`📝 Partial result: "${bestMatch}"`);
-      }
+      });
     });
 
-    // ✅ Lắng nghe trạng thái native để tự khởi động lại nếu session tự dừng
-    this.listeningStateListener = await this.speechRecognition.addListener('listeningState', (data: any) => {
-      const status = data?.status;
-      console.log('👂 listeningState:', status);
+    // ✅ Listener khi engine dừng (có thể do hết câu hoặc lỗi)
+    SpeechRecognition.addListener('listeningState', (data: any) => {
+      console.log('📡 Listening state:', data.status);
 
-      if (status === 'started') {
-        this.isNativeListening = true;
-        return;
-      }
-
-      if (status === 'stopped') {
-        this.isNativeListening = false;
-        this.lastStopReason = this.userRequestedStop ? 'user' : 'native-stop';
-
-        // Nếu người dùng vẫn đang ghi (chưa bấm Stop), tự khởi động lại
-        if (this.isRecording()) {
-          // Chốt câu hiện tại nếu còn
+      this.ngZone.run(() => {
+        if (data.status === 'stopped' && this.isRecording() && !this.userRequestedStop) {
+          // ✅ Nếu có text, lưu lại trước khi restart
           if (this.currentSentenceText.trim()) {
-            this.ngZone.run(() => {
-              this.finalizeSentence();
-            });
+            this.finalizeSentence();
           }
-
-          // Khởi động lại phiên native
-          this.restartNativeSession();
+          // ✅ Restart để tiếp tục nghe
+          this.restartRecognition();
         }
-      }
+      });
     });
-
-    console.log('✅ Listeners setup complete');
   }
 
   /**
-   * ✅ Bắt đầu ghi âm và kiểm tra im lặng
+   * ✅ Bắt đầu ghi âm
    */
   async startRecording() {
-    // Đảm bảo listener luôn hoạt động trước khi start
-    await this.setupListeners();
-
     this.userRequestedStop = false;
-    this.lastStopReason = 'unknown';
 
-    if (this.platform.is('capacitor') && !this.hasPermission) {
-      console.error('❌ Không có quyền ghi âm');
-      alert('Vui lòng cấp quyền microphone trong cài đặt');
-      return;
-    }
-
-    if (!this.platform.is('capacitor')) {
-      console.error('❌ Speech recognition không hỗ trợ trên web');
-      this.currentText.set('Speech recognition không hỗ trợ trên web');
-      return;
+    if (!this.hasPermission) {
+      await this.checkAndRequestPermission();
+      if (!this.hasPermission) {
+        this.currentText.set('❌ Vui lòng cấp quyền microphone');
+        return;
+      }
     }
 
     try {
@@ -207,27 +164,16 @@ export class Tab1Page {
       this.currentSentenceText = '';
       this.sentences.set([]);
       this.lastPartialResultTime = Date.now();
-      this.savedLength = 0;
-      this.lastFullText = '';
-      this.isNativeListening = false;
 
-      console.log('🔴 Bắt đầu ghi âm...');
+      console.log('🔴 Bắt đầu ghi âm bằng @capgo/capacitor-speech-recognition...');
 
-      // ✅ allowForSilence=60000 (60 giây): Plugin sẽ KHÔNG tự động dừng
-      // Chúng ta sẽ dùng code riêng để phát hiện im lặng 2s và ngắt câu
-      // Plugin chỉ dừng khi user bấm stop
-      await this.speechRecognition.start({
+      await SpeechRecognition.start({
         language: this.selectedLanguage,
-        maxResults: 1,
-        popup: false,
         partialResults: true,
-        addPunctuation: true,
-        allowForSilence: 60000, // ✅ 60 giây: Tránh plugin tự động dừng sớm
+        popup: false,
       });
 
       this.isRecording.set(true);
-
-      // ✅ Bắt đầu kiểm tra im lặng mỗi 300ms
       this.startSilenceDetection();
 
     } catch (error) {
@@ -238,22 +184,78 @@ export class Tab1Page {
   }
 
   /**
+   * ✅ Khởi động lại recognition
+   */
+  private async restartRecognition() {
+    if (!this.isRecording() || this.userRequestedStop) return;
+
+    try {
+      console.log('🔄 Khởi động lại recognition...');
+      this.currentSentenceText = '';
+      this.currentText.set('🎤 Đang lắng nghe...');
+      this.lastPartialResultTime = Date.now();
+
+      await SpeechRecognition.start({
+        language: this.selectedLanguage,
+        partialResults: true,
+        popup: false,
+      });
+
+    } catch (error) {
+      console.error('❌ Lỗi khi restart recognition:', error);
+      this.isRecording.set(false);
+      this.stopSilenceDetection();
+    }
+  }
+
+  /**
+   * ✅ Dừng ghi âm
+   */
+  async stopRecording() {
+    console.log('🛑 Dừng ghi âm');
+
+    this.userRequestedStop = true;
+    this.stopSilenceDetection();
+    this.isRecording.set(false);
+
+    // ✅ Lưu câu cuối cùng nếu có
+    if (this.currentSentenceText.trim()) {
+      this.finalizeSentence();
+    }
+
+    this.currentText.set('');
+
+    try {
+      await SpeechRecognition.stop();
+    } catch (error) {
+      console.error('❌ Lỗi khi dừng recognition:', error);
+    }
+
+    // ✅ Lưu tất cả câu vào lịch sử
+    const allText = this.sentences().map(s => s.text).join('\n');
+    if (allText) {
+      this.addToHistory(allText);
+    }
+
+    this.showToast(`✅ Ghi âm hoàn thành: ${this.sentences().length} câu`);
+  }
+
+  /**
    * ✅ Kiểm tra im lặng để ngắt câu
-   * Nếu im lặng > 2 giây → ngắt câu hiện tại
    */
   private startSilenceDetection() {
     console.log(`⏱️ Bắt đầu kiểm tra im lặng (threshold: ${this.silenceSeconds}s)`);
 
+    this.stopSilenceDetection();
     this.silenceCheckInterval = setInterval(() => {
       if (!this.isRecording()) {
-        clearInterval(this.silenceCheckInterval);
+        this.stopSilenceDetection();
         return;
       }
 
       const now = Date.now();
       const timeSinceLastResult = now - this.lastPartialResultTime;
 
-      // ✅ Nếu im lặng > 2 giây → ngắt câu
       if (timeSinceLastResult > this.silenceThreshold && this.currentSentenceText.trim()) {
         console.log(`🔇 Phát hiện im lặng ${timeSinceLastResult}ms - Ngắt câu`);
 
@@ -261,10 +263,16 @@ export class Tab1Page {
           this.finalizeSentence();
         });
 
-        // ✅ Reset thời gian để không ngắt lại ngay lập tức
         this.lastPartialResultTime = Date.now();
       }
-    }, 300); // Kiểm tra mỗi 300ms
+    }, 300);
+  }
+
+  private stopSilenceDetection() {
+    if (this.silenceCheckInterval) {
+      clearInterval(this.silenceCheckInterval);
+      this.silenceCheckInterval = null;
+    }
   }
 
   /**
@@ -280,110 +288,92 @@ export class Tab1Page {
         timestamp: new Date(),
       };
 
-      // ✅ Thêm vào danh sách câu
       const currentSentences = this.sentences();
       this.sentences.set([...currentSentences, newSentence]);
 
       console.log(`✅ Câu ${currentSentences.length + 1}: "${sentenceText}"`);
-
-      // ✅ Hiển thị toast thông báo
       this.showToast(`✅ Câu ${currentSentences.length + 1}: "${sentenceText}"`);
     }
 
-    // ✅ Reset text hiện tại
     this.currentSentenceText = '';
     this.currentText.set('🎤 Đang lắng nghe...');
+  }
 
-    // ✅ Đánh dấu đã cắt đến độ dài hiện tại của full text
-    this.savedLength = this.lastFullText.length;
+  // ✅ URL API TTS custom của Goosef
+  private readonly GOOSEF_TTS_URL = 'https://goosef.com/thaiminhdung/bot_tts.php?text=';
+
+  /**
+   * ✅ Phát tiếng - Ưu tiên Goosef TTS API (hỗ trợ tiếng Việt)
+   * Fallback sang native TTS nếu lỗi
+   */
+  private async speakText(text: string): Promise<boolean> {
+    // ✅ 1. Ưu tiên Goosef TTS API (tiếng Việt)
+    if (this.selectedLanguage.startsWith('vi')) {
+      const success = await this.goosefTts(text);
+      if (success) return true;
+    }
+
+    // ✅ 2. Fallback: Native TTS (@capgo/capacitor-speech-synthesis)
+    return this.fallbackNativeTts(text);
   }
 
   /**
-   * ✅ Khởi động lại phiên native nếu engine tự dừng
+   * ✅ Goosef TTS API - Đọc tiếng Việt
    */
-  private async restartNativeSession() {
-    if (!this.isRecording() || this.isNativeListening) return;
-
+  private async goosefTts(text: string): Promise<boolean> {
     try {
-      console.log('🔄 Khởi động lại phiên recognition...');
+      console.log('🔊 Đang gọi Goosef TTS API...');
+      const encodedText = encodeURIComponent(text);
+      const audioUrl = `${this.GOOSEF_TTS_URL}${encodedText}`;
 
-      // ✅ Reset trạng thái cho phiên mới
-      this.currentSentenceText = '';
-      this.currentText.set('🎤 Đang lắng nghe...');
+      const audio = new Audio(audioUrl);
 
-      await this.speechRecognition.start({
-        language: this.selectedLanguage,
-        maxResults: 1,
-        popup: false,
-        partialResults: true,
-        addPunctuation: true,
-        // allowForSilence: 60000,
+      return new Promise((resolve) => {
+        audio.onended = () => {
+          console.log('✅ Goosef TTS phát xong');
+          resolve(true);
+        };
+        audio.onerror = (err) => {
+          console.warn('Goosef TTS lỗi:', err);
+          resolve(false);
+        };
+        audio.play().catch((err) => {
+          console.warn('Goosef TTS play() lỗi:', err);
+          resolve(false);
+        });
       });
-
-      this.lastPartialResultTime = Date.now();
-      this.isNativeListening = true;
-
-    } catch (error) {
-      console.error('❌ Lỗi khi khởi động lại recognition:', error);
+    } catch (err) {
+      console.warn('Goosef TTS lỗi:', err);
+      return false;
     }
   }
 
   /**
-   * ✅ Dừng ghi âm
+   * ✅ Fallback: Native TTS (@capgo/capacitor-speech-synthesis)
    */
-  async stopRecording() {
-    console.log('🛑 Dừng ghi âm');
+  private async fallbackNativeTts(text: string): Promise<boolean> {
+    try {
+      const { isAvailable } = await SpeechSynthesis.isAvailable();
+      if (!isAvailable) {
+        console.warn('Native TTS không khả dụng');
+        return false;
+      }
 
-    this.userRequestedStop = true;
-    this.lastStopReason = 'user';
-
-    if (this.silenceCheckInterval) {
-      clearInterval(this.silenceCheckInterval);
-    }
-
-    this.isRecording.set(false);
-    this.isNativeListening = false;
-
-    // ✅ Lưu câu cuối cùng nếu có
-    if (this.currentSentenceText.trim()) {
-      this.ngZone.run(() => {
-        this.finalizeSentence();
+      await SpeechSynthesis.speak({
+        text,
+        language: this.selectedLanguage,
+        rate: 1.0,
+        pitch: 1.0,
+        volume: 1.0,
+        queueStrategy: 'Flush',
       });
+
+      console.log('✅ Native TTS phát thành công');
+      return true;
+    } catch (err) {
+      console.warn('Native TTS lỗi:', err);
+      return false;
     }
-
-    // Nếu vẫn còn phần text mới sau savedLength mà chưa chốt (trong trường hợp không có partial cuối)
-    if (this.lastFullText && this.savedLength < this.lastFullText.length) {
-      const newPart = this.lastFullText.substring(this.savedLength).trim();
-      if (newPart) {
-        this.ngZone.run(() => {
-          this.currentSentenceText = newPart;
-          this.finalizeSentence();
-        });
-      }
-    }
-
-    this.currentText.set('');
-
-    if (this.platform.is('capacitor')) {
-      try {
-        await this.speechRecognition.stop();
-        console.log('✅ Plugin stopped');
-      } catch (error) {
-        console.error('❌ Lỗi khi dừng ghi âm:', error);
-      }
-    }
-
-    // Dọn listener trạng thái
-    await this.listeningStateListener?.remove();
-
-    // ✅ Lưu tất cả câu vào lịch sử
-    const allText = this.sentences().map(s => s.text).join('\n');
-    if (allText) {
-      this.addToHistory(allText);
-    }
-
-    // ✅ Hiển thị tổng kết
-    this.showToast(`✅ Ghi âm hoàn thành: ${this.sentences().length} câu`);
   }
 
   /**
@@ -393,6 +383,35 @@ export class Tab1Page {
     this.currentText.set('');
     this.sentences.set([]);
     this.currentSentenceText = '';
+  }
+
+  /**
+   * ✅ Chuẩn hóa text hiện tại bằng Gemini (nếu bật)
+   */
+  async normalizeCurrentText() {
+    const text = this.currentText();
+    if (!text || !this.enabledAi) return;
+
+    try {
+      const refined = await this.geminiService.refineTranscription(text, this.selectedLanguage);
+      this.currentText.set(refined);
+      await this.showToast('✅ Đã chuẩn hóa bằng Gemini');
+    } catch (error) {
+      console.error('❌ Lỗi normalizeCurrentText:', error);
+      await this.showToast('❌ Lỗi AI');
+    }
+  }
+
+  /**
+   * ✅ Đọc to text hiện tại (Capacitor TTS hoặc Web Speech API)
+   */
+  async speakCurrentText() {
+    if (!this.enabledVoices) return;
+
+    const text = this.currentText();
+    if (!text) return;
+
+    await this.speakText(text);
   }
 
   /**
@@ -474,6 +493,40 @@ export class Tab1Page {
     } catch (error) {
       console.error('❌ Lỗi khi load lịch sử:', error);
     }
+  }
+
+  /**
+   * ✅ Chuẩn hóa một item trong lịch sử bằng Gemini
+   */
+  async normalizeHistoryItem(index: number) {
+    if (!this.enabledAi) return;
+    const items = this.history();
+    const target = items[index];
+    if (!target || !target.text) return;
+
+    try {
+      const refined = await this.geminiService.refineTranscription(target.text, this.selectedLanguage);
+      const updated = items.map((item, i) => i === index ? { ...item, text: refined } : item);
+      this.history.set(updated);
+      this.saveHistory();
+      await this.showToast('✅ Đã chuẩn hóa đoạn lịch sử');
+    } catch (error) {
+      console.error('❌ Lỗi khi chuẩn hóa lịch sử:', error);
+      await this.showToast('❌ Lỗi AI');
+    }
+  }
+
+  /**
+   * ✅ Đọc to một item trong lịch sử
+   */
+  async speakHistoryItem(index: number) {
+    if (!this.enabledVoices) return;
+
+    const items = this.history();
+    const target = items[index];
+    if (!target || !target.text) return;
+
+    await this.speakText(target.text);
   }
 
   /**
