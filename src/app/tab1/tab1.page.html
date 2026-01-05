@@ -63,11 +63,11 @@
     </ion-card-content>
   </ion-card>
 
-  <!-- ✅ Danh sách câu nhận diện -->
+  <!-- ✅ Kết quả ghi âm -->
   <ion-card *ngIf="sentences().length > 0" class="ion-margin-top">
     <ion-card-header>
       <ion-card-title style="display: flex; justify-content: space-between; align-items: center;">
-        <span>📝 Danh sách câu ({{ sentences().length }})</span>
+        <span>📝 Kết quả ({{ sentences().length }} câu)</span>
         <ion-button size="small" (click)="copyAllSentences()" fill="outline" color="success">
           <ion-icon name="copy-outline" slot="start"></ion-icon>
           Copy All
@@ -75,31 +75,9 @@
       </ion-card-title>
     </ion-card-header>
     <ion-card-content>
-      <ion-list>
-        <ion-item *ngFor="let sentence of sentences(); let i = index" class="sentence-item">
-          <ion-label class="ion-text-wrap">
-            <p class="sentence-number" style="font-weight: bold; margin: 0;">
-              Câu {{ i + 1 }}
-            </p>
-            <p class="sentence-text" style="margin: 4px 0 0 0; font-size: 16px;">
-              {{ sentence.text }}
-            </p>
-            <p class="sentence-meta" style="margin: 4px 0 0 0; font-size: 12px; color: #999;">
-              {{ sentence.timestamp | date:'HH:mm:ss' }}
-            </p>
-          </ion-label>
-
-          <!-- Copy Sentence Button -->
-          <ion-button slot="end" fill="clear" size="small" (click)="copySentence(sentence)" color="success">
-            <ion-icon name="copy-outline"></ion-icon>
-          </ion-button>
-
-          <!-- Delete Sentence Button -->
-          <ion-button slot="end" fill="clear" size="small" color="danger" (click)="removeSentence(sentence.id)">
-            <ion-icon name="trash-outline"></ion-icon>
-          </ion-button>
-        </ion-item>
-      </ion-list>
+      <div class="result-text-area"
+        style="white-space: pre-line; font-size: 16px; line-height: 1.8; padding: 12px; background: var(--ion-color-light); border-radius: 8px;">
+        {{ getFullText() }}</div>
     </ion-card-content>
   </ion-card>
 
@@ -126,36 +104,37 @@
     <ion-card-content>
       <ion-list>
         <ion-item *ngFor="let item of history(); let i = index" class="history-item">
-          <ion-label class="ion-text-wrap">
+          <div style="width: 100%; display: flex; flex-direction: column; gap: 8px;">
             <p class="history-text" style="margin: 0; color: #333;">
               {{ item.text }}
             </p>
-            <p class="history-meta" style="margin: 4px 0 0 0; color: #999; font-size: 12px;">
+            <div style="display: flex; gap: 4px;">
+              <!-- Normalize with AI -->
+              <ion-button fill="clear" size="small" color="tertiary" (click)="normalizeHistoryItem(i)"
+                [disabled]="isRecording()">
+                <ion-icon name="sparkles-outline"></ion-icon>
+              </ion-button>
+
+              <!-- Speak -->
+              <ion-button fill="clear" size="small" color="success" (click)="speakHistoryItem(i)"
+                [disabled]="isRecording()">
+                <ion-icon name="volume-high-outline"></ion-icon>
+              </ion-button>
+
+              <!-- Copy History Button -->
+              <ion-button fill="clear" size="small" color="success" (click)="copyToClipboard(item.text)">
+                <ion-icon name="copy-outline"></ion-icon>
+              </ion-button>
+
+              <!-- Delete History Button -->
+              <ion-button fill="clear" size="small" color="danger" (click)="removeFromHistory(i)">
+                <ion-icon name="trash-outline"></ion-icon>
+              </ion-button>
+            </div>
+            <p class="history-meta" style="margin: 0; color: #999; font-size: 12px;">
               <small>{{ item.time | date:'dd/MM/yyyy HH:mm:ss' }} • {{ item.language }}</small>
             </p>
-          </ion-label>
-
-          <!-- Normalize with AI -->
-          <ion-button slot="end" fill="clear" size="small" color="tertiary" (click)="normalizeHistoryItem(i)"
-            [disabled]="isRecording()">
-            <ion-icon name="sparkles-outline"></ion-icon>
-          </ion-button>
-
-          <!-- Speak -->
-          <ion-button slot="end" fill="clear" size="small" color="success" (click)="speakHistoryItem(i)"
-            [disabled]="isRecording()">
-            <ion-icon name="volume-high-outline"></ion-icon>
-          </ion-button>
-
-          <!-- Copy History Button -->
-          <ion-button slot="end" fill="clear" size="small" color="success" (click)="copyToClipboard(item.text)">
-            <ion-icon name="copy-outline"></ion-icon>
-          </ion-button>
-
-          <!-- Delete History Button -->
-          <ion-button slot="end" fill="clear" size="small" color="danger" (click)="removeFromHistory(i)">
-            <ion-icon name="trash-outline"></ion-icon>
-          </ion-button>
+          </div>
         </ion-item>
       </ion-list>
     </ion-card-content>

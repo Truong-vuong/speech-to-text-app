@@ -48,6 +48,9 @@ export class Tab1Page {
   private silenceCheckInterval: any = null;
   private currentSentenceText = '';
   private userRequestedStop = false;
+  private lastFinalizedText = ''; // Text của câu vừa được finalize
+  private lastFinalizedTime = 0; // Timestamp của lần finalize cuối
+  private isRestarting = false; // Flag để ngăn duplicate khi restart
 
   get silenceSeconds() {
     return this.silenceThreshold / 1000;
@@ -117,6 +120,12 @@ export class Tab1Page {
   private setupSpeechListeners() {
     // ✅ Listener nhận kết quả partial
     SpeechRecognition.addListener('partialResults', (data: any) => {
+      // ✅ KHÔNG xử lý nếu đang restart (tránh final results ghi đè câu đã finalize)
+      if (this.isRestarting) {
+        console.log('⏭️ Bỏ qua partialResults khi đang restart');
+        return;
+      }
+
       this.lastPartialResultTime = Date.now();
 
       this.ngZone.run(() => {
@@ -134,10 +143,18 @@ export class Tab1Page {
 
       this.ngZone.run(() => {
         if (data.status === 'stopped' && this.isRecording() && !this.userRequestedStop) {
-          // ✅ Nếu có text, lưu lại trước khi restart
+          // ✅ KHÔNG finalize nếu đang restart (đã finalize bởi silence detection rồi)
+          if (this.isRestarting) {
+            console.log('⏭️ Bỏ qua finalize khi đang restart');
+            this.restartRecognition();
+            return;
+          }
+
+          // ✅ Chỉ lưu nếu có text
           if (this.currentSentenceText.trim()) {
             this.finalizeSentence();
           }
+
           // ✅ Restart để tiếp tục nghe
           this.restartRecognition();
         }
@@ -150,6 +167,7 @@ export class Tab1Page {
    */
   async startRecording() {
     this.userRequestedStop = false;
+    this.isRestarting = false;
 
     if (!this.hasPermission) {
       await this.checkAndRequestPermission();
@@ -162,6 +180,8 @@ export class Tab1Page {
     try {
       this.currentText.set('🎤 Đang lắng nghe...');
       this.currentSentenceText = '';
+      this.lastFinalizedText = '';
+      this.lastFinalizedTime = 0;
       this.sentences.set([]);
       this.lastPartialResultTime = Date.now();
 
@@ -201,10 +221,16 @@ export class Tab1Page {
         popup: false,
       });
 
+      // ✅ Clear flag sau khi restart xong và đợi một chút cho engine ổn định
+      setTimeout(() => {
+        this.isRestarting = false;
+      }, 200);
+
     } catch (error) {
       console.error('❌ Lỗi khi restart recognition:', error);
       this.isRecording.set(false);
       this.stopSilenceDetection();
+      this.isRestarting = false;
     }
   }
 
@@ -218,8 +244,9 @@ export class Tab1Page {
     this.stopSilenceDetection();
     this.isRecording.set(false);
 
-    // ✅ Lưu câu cuối cùng nếu có
-    if (this.currentSentenceText.trim()) {
+    // ✅ Lưu câu cuối cùng nếu có và chưa được lưu
+    const currentText = this.currentSentenceText.trim();
+    if (currentText && currentText !== this.lastFinalizedText) {
       this.finalizeSentence();
     }
 
@@ -260,6 +287,8 @@ export class Tab1Page {
         console.log(`🔇 Phát hiện im lặng ${timeSinceLastResult}ms - Ngắt câu`);
 
         this.ngZone.run(() => {
+          // ✅ Set flag để ngăn các listener xử lý final results
+          this.isRestarting = true;
           this.finalizeSentence();
         });
 
@@ -290,6 +319,10 @@ export class Tab1Page {
 
       const currentSentences = this.sentences();
       this.sentences.set([...currentSentences, newSentence]);
+
+      // ✅ Lưu lại text và time để tracking
+      this.lastFinalizedText = sentenceText;
+      this.lastFinalizedTime = Date.now();
 
       console.log(`✅ Câu ${currentSentences.length + 1}: "${sentenceText}"`);
       this.showToast(`✅ Câu ${currentSentences.length + 1}: "${sentenceText}"`);
@@ -383,6 +416,13 @@ export class Tab1Page {
     this.currentText.set('');
     this.sentences.set([]);
     this.currentSentenceText = '';
+  }
+
+  /**
+   * ✅ Lấy toàn bộ text gộp lại, mỗi câu xuống dòng
+   */
+  getFullText(): string {
+    return this.sentences().map(s => s.text).join('\n');
   }
 
   /**
